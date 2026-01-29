@@ -1,0 +1,36 @@
+import os
+import shutil
+from typing import Optional, Tuple
+
+from .environment import EnvironmentManager
+
+
+class AudioManager:
+    def __init__(self, run_command, env: EnvironmentManager) -> None:
+        self._run_command = run_command
+        self._env = env
+
+    def ensure_audio_access(self, app_user: str) -> Tuple[Optional[str], Optional[str]]:
+        if not shutil.which("setfacl"):
+            return None, None
+        invoking_user, invoking_uid = self._env.get_invoking_user()
+        runtime_dir = f"/run/user/{invoking_uid}"
+        pulse_dir = os.path.join(runtime_dir, "pulse")
+        pulse_socket = os.path.join(pulse_dir, "native")
+        pipewire_socket = os.path.join(runtime_dir, "pipewire-0")
+        pipewire_lock = os.path.join(runtime_dir, "pipewire-0.lock")
+
+        for path in (runtime_dir, pulse_dir):
+            if os.path.isdir(path):
+                self._run_command(["setfacl", "-m", f"u:{app_user}:rwX", path])
+                self._run_command(["setfacl", "-m", "m:rwX", path])
+                self._run_command(["setfacl", "-m", f"d:u:{app_user}:rwX", path])
+                self._run_command(["setfacl", "-m", "d:m:rwX", path])
+        for path in (pulse_socket, pipewire_socket, pipewire_lock):
+            if os.path.exists(path):
+                self._run_command(["setfacl", "-m", f"u:{app_user}:rw", path])
+                self._run_command(["setfacl", "-m", "m:rw", path])
+
+        pulse_server = f"unix:{pulse_socket}" if os.path.exists(pulse_socket) else None
+        pipewire_remote = f"unix:{pipewire_socket}" if os.path.exists(pipewire_socket) else None
+        return pulse_server, pipewire_remote
