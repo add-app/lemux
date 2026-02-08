@@ -18,6 +18,7 @@ class AppManager:
         audio,
         nft,
         routing,
+        iptables,
         base_table_id: int,
         base_priority: int,
     ) -> None:
@@ -27,6 +28,7 @@ class AppManager:
         self._audio = audio
         self._nft = nft
         self._routing = routing
+        self._iptables = iptables
         self._base_table_id = base_table_id
         self._base_priority = base_priority
         self._desktop = DesktopManager()
@@ -91,6 +93,7 @@ class AppManager:
         state["interfaces"][iface] = entry
         return entry
 
+
     def _ensure_runtime_rules(self, app_entry: Dict[str, Any]) -> None:
         state = self._state.load_state()
         iface = app_entry.get("iface")
@@ -113,6 +116,7 @@ class AppManager:
             self._base_priority + iface_entry["table_id"],
         )
         self._nft.ensure_uid_mark(app_entry["uid"], iface_entry["mark"])
+        self._iptables.ensure_uid_exclusion(app_entry["uid"])
         self._routing.ensure_uid_rule(
             app_entry["uid"],
             iface_entry["table_name"],
@@ -126,6 +130,7 @@ class AppManager:
         use_profile: Optional[bool] = None,
         existing_user: Optional[str] = None,
     ) -> Dict[str, Any]:
+        # ... (start of assign_app logic is same)
         state = self._state.load_state()
         binary, args, normalized = self.split_command(app_command)
 
@@ -150,6 +155,7 @@ class AppManager:
 
         app_key = normalized
         if app_key not in state["apps"]:
+             # ... (logic to create user or get user, same)
             if existing_user:
                 try:
                     pw = pwd.getpwnam(existing_user)
@@ -192,6 +198,7 @@ class AppManager:
                     config.set_users(cfg_users)
 
         if existing_user and app_key in state["apps"]:
+             # ... (update existing)
             try:
                 pw = pwd.getpwnam(existing_user)
             except KeyError as exc:
@@ -203,6 +210,7 @@ class AppManager:
             state["apps"][app_key]["uid"] = pw.pw_uid
             state["apps"][app_key]["home"] = pw.pw_dir
             state["apps"][app_key]["use_user_home"] = True
+
         if app_key in state["apps"]:
             state["apps"][app_key]["binary"] = binary
             state["apps"][app_key]["arguments"] = args
@@ -212,6 +220,7 @@ class AppManager:
             app_entry["use_profile"] = bool(use_profile)
 
         self._nft.ensure_uid_mark(app_entry["uid"], iface_entry["mark"])
+        self._iptables.ensure_uid_exclusion(app_entry["uid"])
         self._routing.ensure_uid_rule(
             app_entry["uid"],
             iface_entry["table_name"],
@@ -228,7 +237,6 @@ class AppManager:
         if normalized in state["apps"]:
             target_key = normalized
         else:
-            # Try to resolve absolute path (fuzzy lookup)
             try:
                 _, _, resolved = self.split_command(app_command)
                 if resolved in state["apps"]:
@@ -248,6 +256,7 @@ class AppManager:
         iface_entry = state["interfaces"].get(iface)
         if iface_entry:
             self._nft.delete_uid_mark(app_entry["uid"], iface_entry["mark"])
+            self._iptables.delete_uid_exclusion(app_entry["uid"])
             self._routing.delete_uid_rule(app_entry["uid"], iface_entry["table_name"])
         if iface_entry:
             remaining = [app for app in state["apps"].values() if app["iface"] == iface]
@@ -272,12 +281,14 @@ class AppManager:
             iface_entry = state.get("interfaces", {}).get(iface)
             if iface_entry:
                 self._routing.delete_uid_rule(app_entry["uid"], iface_entry["table_name"])
+                self._iptables.delete_uid_exclusion(app_entry["uid"])
         table_list = self._run_command(["nft", "list", "tables"]).stdout
         if f"table inet lemux" in table_list:
             self._run_command(["nft", "delete", "table", "inet", "lemux"])
 
         self._routing.cleanup_rt_tables()
         self._state.save_state({"interfaces": {}, "apps": {}})
+
 
     def launch_app(self, app_command: str, app_entry: Dict[str, Any]) -> None:
         self._process.launch_app(app_command, app_entry, runtime_rules_callback=self._ensure_runtime_rules)

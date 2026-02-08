@@ -117,6 +117,9 @@ class RoutingManager:
         if ip6 and gw6:
              self._run_command(["ip", "-6", "route", "replace", net6, "dev", iface, "table", table_name])
              self._run_command(["ip", "-6", "route", "replace", "default", "via", gw6, "dev", iface, "table", table_name])
+        else:
+             # Prevent leak to VPN if no IPv6 on interface
+             self._run_command(["ip", "-6", "route", "replace", "unreachable", "default", "table", table_name], suppress_errors=True)
 
     def cleanup_rt_tables(self) -> None:
         rt_tables = "/etc/iproute2/rt_tables"

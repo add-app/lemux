@@ -5,6 +5,7 @@ from .environment import EnvironmentManager
 from .acl import AclManager
 from .audio import AudioManager
 from .rules import NftRuleManager
+from .iptables import IptablesManager
 from .routing import RoutingManager
 from .apps import AppManager
 from .trace import TraceManager
@@ -44,7 +45,8 @@ _ACL = AclManager(_run_command, _ENV)
 _AUDIO = AudioManager(_run_command, _ENV)
 _NFT = NftRuleManager(_run_command, NFT_TABLE, NFT_CHAIN)
 _ROUTING = RoutingManager(_run_command)
-_APPS = AppManager(_run_command, _ENV, _ACL, _AUDIO, _NFT, _ROUTING, BASE_TABLE_ID, BASE_PRIORITY)
+_IPTABLES = IptablesManager(_run_command)
+_APPS = AppManager(_run_command, _ENV, _ACL, _AUDIO, _NFT, _ROUTING, _IPTABLES, BASE_TABLE_ID, BASE_PRIORITY)
 _TRACE = TraceManager(_NFT)
 
 

@@ -183,6 +183,7 @@ class ProcessManager:
             logger.warn("SECURITY WARNING: Application is running with X11 forwarding. It can potentially log keystrokes and capture screen content of other apps.")
 
         env = os.environ.copy()
+
         app_entry = self._ensure_app_home(app_entry)
         self._persist_app_home(app_entry)
         
