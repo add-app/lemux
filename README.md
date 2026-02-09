@@ -1,16 +1,9 @@
 <div align="center">
 
 <img src="assets/logo.png" width="200" height="200" alt="Lemux Blue Kite Logo">
-
-# Lemux
-
-Soft app-to-interface routing for Linux
+<h1>Lemux - Soft app-to-interface routing for Linux</h1>
 
 </div>
-
----
-
-## Overview
 
 Lemux routes specific applications through a chosen network interface using policy routing by user (uidrange) plus nftables packet marks (fwmark). It launches apps under dedicated system users, so any app can be routed **without namespaces**. The same dedicated user can be reused across multiple apps.
 
