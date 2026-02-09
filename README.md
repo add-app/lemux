@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.png" width="200" height="200" alt="Lemux Blue Kite Logo">
+
 # Lemux
 
 Soft app-to-interface routing for Linux
@@ -22,6 +24,7 @@ Tested on Debian and Ubuntu. Compatible with Portmaster.
 - GUI and CLI workflows
 - Desktop entry creation and management
 - App state stored in `~/.config/.lemux`
+- **Smart iptables handling**: User traffic is excluded from conflicting iptables rules (e.g., from other VPNs or firewalls) to ensure correct routing.
 
 ## Prerequisites
 
@@ -29,7 +32,7 @@ System packages:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-tk iproute2 nftables acl
+sudo apt install -y python3 python3-tk iproute2 nftables iptables acl
 ```
 
 Python deps:
@@ -114,7 +117,8 @@ sudo python3 cli.py trace --app "/usr/bin/yandex-browser-stable" --iface enp0s31
 1. Lemux creates (or reuses) a dedicated system user for the app.
 2. nftables marks packets for that uid (fwmark).
 3. ip rule routes marked packets via a dedicated routing table for the selected interface.
-4. The app runs as that user, with audio and desktop integration handled at launch.
+4. **Iptables Exclusion**: Lemux ensures that the dedicated user's traffic is excluded from potentially conflicting `iptables` rules (in NAT/Mangle tables) that might otherwise hijack the traffic.
+5. The app runs as that user, with audio and desktop integration handled at launch.
 
 ## Notes
 
