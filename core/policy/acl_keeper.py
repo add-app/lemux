@@ -19,13 +19,9 @@ class AclKeeper:
         self.interval = interval
         self.runtime_dir = f"/run/user/{host_uid}"
         self.pulse_dir = os.path.join(self.runtime_dir, "pulse")
-        self.targets = [
-            self.runtime_dir,
-            self.pulse_dir,
-            os.path.join(self.pulse_dir, "native"),
-            os.path.join(self.runtime_dir, "pipewire-0"),
-            os.path.join(self.runtime_dir, "pipewire-0.lock"),
-        ]
+        self.pulse_socket = os.path.join(self.pulse_dir, "native")
+        self.pipewire_socket = os.path.join(self.runtime_dir, "pipewire-0")
+        self.pipewire_lock = os.path.join(self.runtime_dir, "pipewire-0.lock")
 
     def check_app_running(self) -> bool:
         # Check if any process is running as app_user using pgrep
@@ -45,31 +41,40 @@ class AclKeeper:
         return False
 
     def apply_acls(self):
-        for path in self.targets:
-            if not os.path.exists(path):
-                continue
-            
-            needs_fix = False
-            # Quick check via getfacl is expensive? 
-            # We can just blindly re-apply? It's "lightweight" enough if 5s interval.
-            # But getfacl allows logging "Restored permissions".
-            
-            # Let's blindly apply to be robust and simple, or check first?
-            # Checking first is better for logs.
-            
-            try:
-                # We interpret "rwX" as sufficiently permissive.
+        try:
+            # Keep pulse dir inheritable for recreated sockets.
+            if os.path.isdir(self.pulse_dir):
+                for rule in (
+                    f"u:{self.app_user}:rwX",
+                    "m:rwX",
+                    f"d:u:{self.app_user}:rwX",
+                    "d:m:rwX",
+                ):
+                    subprocess.run(
+                        ["setfacl", "-m", rule, self.pulse_dir],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+
+            # Socket-level ACLs for immediate access.
+            for path in (self.pulse_socket, self.pipewire_socket, self.pipewire_lock):
+                if not os.path.exists(path):
+                    continue
                 subprocess.run(
-                    ["setfacl", "-m", f"u:{self.app_user}:rwX", path],
-                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    ["setfacl", "-m", f"u:{self.app_user}:rw", path],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
-                # Ensure mask is correct too
                 subprocess.run(
-                    ["setfacl", "-m", "m:rwX", path],
-                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    ["setfacl", "-m", "m:rw", path],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
-            except Exception as e:
-                logger.error(f"Failed to apply ACLs on {path}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to apply ACLs: {e}")
 
     def run(self):
         logger.info(f"Starting ACL Keeper for {self.app_user} (Host: {self.host_uid})")

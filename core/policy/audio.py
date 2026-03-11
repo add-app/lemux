@@ -20,12 +20,12 @@ class AudioManager:
         pipewire_socket = os.path.join(runtime_dir, "pipewire-0")
         pipewire_lock = os.path.join(runtime_dir, "pipewire-0.lock")
 
-        for path in (runtime_dir, pulse_dir):
-            if os.path.isdir(path):
-                self._run_command(["setfacl", "-m", f"u:{app_user}:rwX", path])
-                self._run_command(["setfacl", "-m", "m:rwX", path])
-                self._run_command(["setfacl", "-m", f"d:u:{app_user}:rwX", path])
-                self._run_command(["setfacl", "-m", "d:m:rwX", path])
+        # Pulse dir can carry default ACLs so recreated sockets inherit access.
+        if os.path.isdir(pulse_dir):
+            self._run_command(["setfacl", "-m", f"u:{app_user}:rwX", pulse_dir])
+            self._run_command(["setfacl", "-m", "m:rwX", pulse_dir])
+            self._run_command(["setfacl", "-m", f"d:u:{app_user}:rwX", pulse_dir])
+            self._run_command(["setfacl", "-m", "d:m:rwX", pulse_dir])
         for path in (pulse_socket, pipewire_socket, pipewire_lock):
             if os.path.exists(path):
                 self._run_command(["setfacl", "-m", f"u:{app_user}:rw", path])
