@@ -42,6 +42,15 @@ class AclKeeper:
 
     def apply_acls(self):
         try:
+            # Minimal traverse ACL on runtime root; no runtime default/mask ACL writes.
+            if os.path.isdir(self.runtime_dir):
+                subprocess.run(
+                    ["setfacl", "-m", f"u:{self.app_user}:r-x", self.runtime_dir],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
             # Keep pulse dir inheritable for recreated sockets.
             if os.path.isdir(self.pulse_dir):
                 for rule in (

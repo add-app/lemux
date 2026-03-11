@@ -20,6 +20,11 @@ class AudioManager:
         pipewire_socket = os.path.join(runtime_dir, "pipewire-0")
         pipewire_lock = os.path.join(runtime_dir, "pipewire-0.lock")
 
+        # Minimal traverse ACL to reach host-user audio sockets.
+        # Do not set runtime_dir mask/default ACL here.
+        if os.path.isdir(runtime_dir):
+            self._run_command(["setfacl", "-m", f"u:{app_user}:r-x", runtime_dir])
+
         # Pulse dir can carry default ACLs so recreated sockets inherit access.
         if os.path.isdir(pulse_dir):
             self._run_command(["setfacl", "-m", f"u:{app_user}:rwX", pulse_dir])
