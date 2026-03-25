@@ -22,6 +22,8 @@ class AclKeeper:
         self.pulse_socket = os.path.join(self.pulse_dir, "native")
         self.pipewire_socket = os.path.join(self.runtime_dir, "pipewire-0")
         self.pipewire_lock = os.path.join(self.runtime_dir, "pipewire-0.lock")
+        self.dbus_session_socket = os.path.join(self.runtime_dir, "bus")
+        self.bluetooth_dir = "/run/bluetooth"
 
     def check_app_running(self) -> bool:
         # Check if any process is running as app_user using pgrep
@@ -66,8 +68,19 @@ class AclKeeper:
                         stderr=subprocess.DEVNULL,
                     )
 
+            # Bluetooth audio requires access to BlueZ control socket and D-Bus session.
+            # Set traverse ACL on /run/bluetooth for BlueZ API access.
+            if os.path.isdir(self.bluetooth_dir):
+                subprocess.run(
+                    ["setfacl", "-m", f"u:{self.app_user}:r-x", self.bluetooth_dir],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
             # Socket-level ACLs for immediate access.
-            for path in (self.pulse_socket, self.pipewire_socket, self.pipewire_lock):
+            # Include D-Bus session socket for BlueZ communication.
+            for path in (self.pulse_socket, self.pipewire_socket, self.pipewire_lock, self.dbus_session_socket):
                 if not os.path.exists(path):
                     continue
                 subprocess.run(

@@ -71,12 +71,49 @@ class ProcessManager:
         except KeyError:
             pass
 
-        self._run_command([
+        # Get invoking user's groups to preserve audio/bluetooth access for Bluetooth audio.
+        invoking_user, _ = self._env.get_invoking_user()
+        try:
+            inv_pw = pwd.getpwnam(invoking_user)
+            inv_groups = subprocess.run(
+                ["id", "-G", invoking_user],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            # Filter to only groups needed for audio/video/Bluetooth functionality.
+            # These groups are required for PulseAudio/PipeWire/BlueZ access.
+            essential_groups = ["audio", "video", "bluetooth", "input"]
+            inv_gids = inv_groups.stdout.strip().split()
+            # Get group names for the GIDs
+            group_names = []
+            for gid in inv_gids:
+                try:
+                    grp = subprocess.run(
+                        ["getent", "group", gid],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    grp_name = grp.stdout.split(":")[0]
+                    if grp_name in essential_groups:
+                        group_names.append(grp_name)
+                except Exception:
+                    pass
+            groups_str = ",".join(group_names) if group_names else None
+        except Exception:
+            groups_str = None
+
+        cmd = [
             "useradd", "--system", "--create-home",
             "--home", home_dir,
             "--shell", "/usr/sbin/nologin",
-            username,
-        ])
+        ]
+        if groups_str:
+            cmd.extend(["--groups", groups_str])
+        cmd.append(username)
+
+        self._run_command(cmd)
         pw = pwd.getpwnam(username)
         return pw.pw_name, pw.pw_uid
 
@@ -334,13 +371,29 @@ class ProcessManager:
                 host_pw = env["PIPEWIRE_REMOTE"].replace("unix:", "", 1)
                 app_pw_dir =f"/run/user/{app_entry['uid']}"
                 app_pw_socket = os.path.join(app_pw_dir, os.path.basename(host_pw))
-                
+
                 # Update Env
                 env["PIPEWIRE_REMOTE"] = f"unix:{app_pw_socket}"
                 env["PIPEWIRE_RUNTIME_DIR"] = app_pw_dir
-                
+
                 bind_mounts.append(f"touch {app_pw_socket}")
                 bind_mounts.append(f"mount --bind {host_pw} {app_pw_socket}")
+
+            # D-Bus session socket - needed for Bluetooth audio via BlueZ.
+            # When the app connects to PipeWire/PulseAudio for Bluetooth audio,
+            # the audio server may need to communicate with BlueZ over the session D-Bus.
+            dbus_session = env.get("DBUS_SESSION_BUS_ADDRESS", "")
+            if dbus_session.startswith("unix:path="):
+                host_dbus = dbus_session.replace("unix:path=", "", 1)
+                app_dbus_dir = f"/run/user/{app_entry['uid']}"
+                app_dbus_socket = os.path.join(app_dbus_dir, os.path.basename(host_dbus))
+
+                # Update Env to point to new location
+                env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={app_dbus_socket}"
+
+                bind_mounts.append(f"mkdir -p {app_dbus_dir}")
+                bind_mounts.append(f"touch {app_dbus_socket}")
+                bind_mounts.append(f"mount --bind {host_dbus} {app_dbus_socket}")
             
             setup_cmds = " && ".join(bind_mounts) if bind_mounts else "true"
 
