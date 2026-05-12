@@ -109,18 +109,31 @@ class AppManager:
         if not iface_entry:
             iface_entry = self._alloc_interface_entry(state, iface)
             self._state.save_state(state)
-        self._routing.ensure_interface_routes(iface, iface_entry["table_name"], iface_entry["table_id"])
+        gateway = self._routing.ensure_interface_routes(
+            iface,
+            iface_entry["table_name"],
+            iface_entry["table_id"],
+            fallback_gateway=iface_entry.get("gateway4"),
+        )
+        if gateway and iface_entry.get("gateway4") != gateway:
+            iface_entry["gateway4"] = gateway
+            self._state.save_state(state)
         self._routing.ensure_ip_rule(
             iface_entry["mark"],
             iface_entry["table_name"],
             self._base_priority + iface_entry["table_id"],
         )
+        self._routing.delete_fwmark_block_rule(iface_entry["mark"])
         self._nft.ensure_uid_mark(app_entry["uid"], iface_entry["mark"])
         self._iptables.ensure_uid_exclusion(app_entry["uid"])
         self._routing.ensure_uid_rule(
             app_entry["uid"],
             iface_entry["table_name"],
             self._base_priority + iface_entry["table_id"] - 1,
+        )
+        self._routing.ensure_uid_block_rule(
+            app_entry["uid"],
+            self._base_priority + iface_entry["table_id"] + 1,
         )
 
     def assign_app(
@@ -146,12 +159,20 @@ class AppManager:
                 state = self._state.load_state()
 
         iface_entry = self._alloc_interface_entry(state, iface)
-        self._routing.ensure_interface_routes(iface, iface_entry["table_name"], iface_entry["table_id"])
+        gateway = self._routing.ensure_interface_routes(
+            iface,
+            iface_entry["table_name"],
+            iface_entry["table_id"],
+            fallback_gateway=iface_entry.get("gateway4"),
+        )
+        if gateway:
+            iface_entry["gateway4"] = gateway
         self._routing.ensure_ip_rule(
             iface_entry["mark"],
             iface_entry["table_name"],
             self._base_priority + iface_entry["table_id"],
         )
+        self._routing.delete_fwmark_block_rule(iface_entry["mark"])
 
         app_key = normalized
         if app_key not in state["apps"]:
@@ -226,6 +247,10 @@ class AppManager:
             iface_entry["table_name"],
             self._base_priority + iface_entry["table_id"] - 1,
         )
+        self._routing.ensure_uid_block_rule(
+            app_entry["uid"],
+            self._base_priority + iface_entry["table_id"] + 1,
+        )
         self._state.save_state(state)
         return app_entry
 
@@ -258,10 +283,12 @@ class AppManager:
             self._nft.delete_uid_mark(app_entry["uid"], iface_entry["mark"])
             self._iptables.delete_uid_exclusion(app_entry["uid"])
             self._routing.delete_uid_rule(app_entry["uid"], iface_entry["table_name"])
+            self._routing.delete_uid_block_rule(app_entry["uid"])
         if iface_entry:
             remaining = [app for app in state["apps"].values() if app["iface"] == iface]
             if not remaining:
-                self._run_command(["ip", "rule", "del", "fwmark", iface_entry["mark"], "lookup", iface_entry["table_name"]])
+                self._routing.delete_ip_rule(iface_entry["mark"], iface_entry["table_name"])
+                self._routing.delete_fwmark_block_rule(iface_entry["mark"])
                 self._run_command(["ip", "route", "flush", "table", iface_entry["table_name"]])
 
         self._state.save_state(state)
@@ -274,17 +301,21 @@ class AppManager:
             except Exception:
                 pass
         for iface_entry in state["interfaces"].values():
-            self._run_command(["ip", "rule", "del", "fwmark", iface_entry["mark"], "lookup", iface_entry["table_name"]])
+            self._routing.delete_ip_rule(iface_entry["mark"], iface_entry["table_name"])
             self._run_command(["ip", "route", "flush", "table", iface_entry["table_name"]])
         for app_entry in state.get("apps", {}).values():
             iface = app_entry.get("iface")
             iface_entry = state.get("interfaces", {}).get(iface)
             if iface_entry:
                 self._routing.delete_uid_rule(app_entry["uid"], iface_entry["table_name"])
+                self._routing.delete_uid_block_rule(app_entry["uid"])
                 self._iptables.delete_uid_exclusion(app_entry["uid"])
         table_list = self._run_command(["nft", "list", "tables"]).stdout
         if f"table inet lemux" in table_list:
             self._run_command(["nft", "delete", "table", "inet", "lemux"])
+        for iface_entry in state["interfaces"].values():
+            self._routing.delete_fwmark_block_rule(iface_entry["mark"])
+        self._routing.flush_block_table()
 
         self._routing.cleanup_rt_tables()
         self._state.save_state({"interfaces": {}, "apps": {}})
