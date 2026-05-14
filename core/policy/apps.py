@@ -118,10 +118,18 @@ class AppManager:
         if gateway and iface_entry.get("gateway4") != gateway:
             iface_entry["gateway4"] = gateway
             self._state.save_state(state)
+        priorities = self._routing.choose_rule_priorities(
+            iface_entry["table_name"],
+            iface_entry["table_id"],
+            self._base_priority,
+        )
+        if iface_entry.get("priority") != priorities["mark"]:
+            iface_entry["priority"] = priorities["mark"]
+            self._state.save_state(state)
         self._routing.ensure_ip_rule(
             iface_entry["mark"],
             iface_entry["table_name"],
-            self._base_priority + iface_entry["table_id"],
+            priorities["mark"],
         )
         self._routing.delete_fwmark_block_rule(iface_entry["mark"])
         self._nft.ensure_uid_mark(app_entry["uid"], iface_entry["mark"])
@@ -129,11 +137,11 @@ class AppManager:
         self._routing.ensure_uid_rule(
             app_entry["uid"],
             iface_entry["table_name"],
-            self._base_priority + iface_entry["table_id"] - 1,
+            priorities["uid"],
         )
         self._routing.ensure_uid_block_rule(
             app_entry["uid"],
-            self._base_priority + iface_entry["table_id"] + 1,
+            priorities["block"],
         )
 
     def assign_app(
@@ -167,10 +175,16 @@ class AppManager:
         )
         if gateway:
             iface_entry["gateway4"] = gateway
+        priorities = self._routing.choose_rule_priorities(
+            iface_entry["table_name"],
+            iface_entry["table_id"],
+            self._base_priority,
+        )
+        iface_entry["priority"] = priorities["mark"]
         self._routing.ensure_ip_rule(
             iface_entry["mark"],
             iface_entry["table_name"],
-            self._base_priority + iface_entry["table_id"],
+            priorities["mark"],
         )
         self._routing.delete_fwmark_block_rule(iface_entry["mark"])
 
@@ -245,11 +259,11 @@ class AppManager:
         self._routing.ensure_uid_rule(
             app_entry["uid"],
             iface_entry["table_name"],
-            self._base_priority + iface_entry["table_id"] - 1,
+            priorities["uid"],
         )
         self._routing.ensure_uid_block_rule(
             app_entry["uid"],
-            self._base_priority + iface_entry["table_id"] + 1,
+            priorities["block"],
         )
         self._state.save_state(state)
         return app_entry

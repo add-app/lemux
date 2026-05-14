@@ -556,10 +556,10 @@ class LemuxApp:
             iface_entry = state.get("interfaces", {}).get(iface, {})
             mark = iface_entry.get("mark", "-")
             table_name = iface_entry.get("table_name", "-")
-            priority = iface_entry.get("table_id")
+            priority = iface_entry.get("priority")
             rule = "-"
             if priority is not None:
-                rule = f"{policy.BASE_PRIORITY + priority}"
+                rule = str(priority)
             row_id = f"app_{hashlib.sha256(app.encode('utf-8')).hexdigest()[:12]}"
             if icon:
                 self._status_icon_cache[row_id] = icon

@@ -2,6 +2,9 @@ from typing import Optional
 
 
 class NftRuleManager:
+    CHAIN_PRIORITY = "-140"
+    CHAIN_PRIORITY_ALIASES = ("priority -140", "priority mangle + 10")
+
     def __init__(self, run_command, table: str, chain: str) -> None:
         self._run_command = run_command
         self._table = table
@@ -13,11 +16,18 @@ class NftRuleManager:
             self._run_command(["nft", "add", "table", "inet", self._table])
 
         chain_list = self._run_command(["nft", "list", "table", "inet", self._table]).stdout
+        if f"chain {self._chain}" in chain_list and not self._has_expected_chain_priority(chain_list):
+            self._run_command(["nft", "delete", "table", "inet", self._table])
+            self._run_command(["nft", "add", "table", "inet", self._table])
+            chain_list = ""
         if f"chain {self._chain}" not in chain_list:
             self._run_command([
                 "nft", "add", "chain", "inet", self._table, self._chain,
-                "{", "type", "route", "hook", "output", "priority", "mangle", ";", "policy", "accept", ";", "}",
+                "{", "type", "route", "hook", "output", "priority", self.CHAIN_PRIORITY, ";", "policy", "accept", ";", "}",
             ])
+
+    def _has_expected_chain_priority(self, chain_list: str) -> bool:
+        return any(priority in chain_list for priority in self.CHAIN_PRIORITY_ALIASES)
 
     def _find_rule_handles(self, selector: str, mark: str) -> list[str]:
         rules = self._run_command(["nft", "-a", "list", "chain", "inet", self._table, self._chain]).stdout

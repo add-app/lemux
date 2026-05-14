@@ -1,11 +1,13 @@
 import ipaddress
 import os
+import re
 from typing import Optional, Tuple
 
 
 class RoutingManager:
     BLOCK_TABLE_ID = 99
     BLOCK_TABLE_NAME = "lemux_block"
+    MIN_DYNAMIC_PRIORITY = 100
 
     def __init__(self, run_command) -> None:
         self._run_command = run_command
@@ -161,10 +163,11 @@ class RoutingManager:
         fallback_gateway: Optional[str] = None,
     ) -> str:
         cached_gateway = fallback_gateway or self.get_table_ipv4_gateway(table_name, iface)
-        _ip_with_cidr, gateway, network = self.parse_ipv4_info(iface, fallback_gateway=cached_gateway)
+        ip_with_cidr, gateway, network = self.parse_ipv4_info(iface, fallback_gateway=cached_gateway)
+        source_ip = str(ipaddress.ip_interface(ip_with_cidr).ip)
         self.ensure_rt_table(table_id, table_name)
-        self._run_command(["ip", "route", "replace", network, "dev", iface, "table", table_name])
-        self._run_command(["ip", "route", "replace", "default", "via", gateway, "dev", iface, "table", table_name])
+        self._run_command(["ip", "route", "replace", network, "dev", iface, "src", source_ip, "table", table_name])
+        self._run_command(["ip", "route", "replace", "default", "via", gateway, "dev", iface, "src", source_ip, "table", table_name])
         self._run_command(["ip", "route", "replace", "unreachable", "default", "metric", "4278198272", "table", table_name])
         self._run_command(["sysctl", "-w", f"net.ipv4.conf.{iface}.rp_filter=2"])
         self._run_command(["sysctl", "-w", "net.ipv4.conf.all.rp_filter=2"])
@@ -200,25 +203,105 @@ class RoutingManager:
         with open(rt_tables, "w", encoding="utf-8") as f:
             f.write("\n".join(remaining) + "\n")
 
+    def choose_rule_priorities(self, table_name: str, table_id: int, fallback_base_priority: int) -> dict[str, int]:
+        fallback_mark = fallback_base_priority + table_id
+        existing_rules = self._run_command(["ip", "rule", "show"]).stdout
+        used_priorities = self._parse_rule_priorities(existing_rules)
+        interfering_priorities = self._find_interfering_rule_priorities(existing_rules)
+
+        mark_priority = fallback_mark
+        if interfering_priorities:
+            earliest_interference = min(interfering_priorities)
+            current_mark_priority = self._find_current_mark_priority(existing_rules, table_name)
+            if current_mark_priority and current_mark_priority + 1 < earliest_interference:
+                mark_priority = current_mark_priority
+            else:
+                candidate = earliest_interference - 2
+                mark_priority = self._find_available_priority_block(candidate, used_priorities, fallback_mark)
+
+        return {
+            "uid": mark_priority - 1,
+            "mark": mark_priority,
+            "block": mark_priority + 1,
+        }
+
+    def _parse_rule_priorities(self, rules: str) -> set[int]:
+        priorities = set()
+        for line in (rules or "").splitlines():
+            match = re.match(r"\s*(\d+):", line)
+            if match:
+                priorities.add(int(match.group(1)))
+        return priorities
+
+    def _find_interfering_rule_priorities(self, rules: str) -> list[int]:
+        priorities = []
+        for line in (rules or "").splitlines():
+            match = re.match(r"\s*(\d+):", line)
+            if not match:
+                continue
+            priority = int(match.group(1))
+            if priority <= self.MIN_DYNAMIC_PRIORITY or priority >= 32766:
+                continue
+            if " lookup lemux_" in line or f" lookup {self.BLOCK_TABLE_NAME}" in line:
+                continue
+            if self._is_interfering_policy_rule(line):
+                priorities.append(priority)
+        return priorities
+
+    def _find_current_mark_priority(self, rules: str, table_name: str) -> Optional[int]:
+        for line in (rules or "").splitlines():
+            match = re.match(r"\s*(\d+):", line)
+            if not match:
+                continue
+            if "fwmark" in line and f" lookup {table_name}" in line:
+                return int(match.group(1))
+        return None
+
+    def _is_interfering_policy_rule(self, rule: str) -> bool:
+        if "suppress_prefixlength" in rule:
+            return True
+        if "not from all fwmark" in rule and " lookup " in rule:
+            return True
+        if "fwmark" in rule and " lookup " in rule:
+            return True
+        return False
+
+    def _find_available_priority_block(
+        self,
+        preferred_mark_priority: int,
+        used_priorities: set[int],
+        fallback_mark_priority: int,
+    ) -> int:
+        mark_priority = preferred_mark_priority
+        while mark_priority - 1 >= self.MIN_DYNAMIC_PRIORITY:
+            block = {mark_priority - 1, mark_priority, mark_priority + 1}
+            if not block & used_priorities:
+                return mark_priority
+            mark_priority -= 3
+        return fallback_mark_priority
+
     def ensure_ip_rule(self, mark: str, table_name: str, priority: int) -> None:
         rules = self._run_command(["ip", "rule", "show"]).stdout
         rule_line = f"fwmark {mark} lookup {table_name}"
-        if rule_line not in rules:
+        if not self._has_rule_at_priority(rules, rule_line, priority):
+            self.delete_ip_rule(mark, table_name)
             self._run_command(["ip", "rule", "add", "fwmark", mark, "lookup", table_name, "priority", str(priority)])
 
         rules6 = self._run_command(["ip", "-6", "rule", "show"], suppress_errors=True).stdout
-        if rule_line not in (rules6 or ""):
+        if not self._has_rule_at_priority(rules6 or "", rule_line, priority):
+            self._run_command(["ip", "-6", "rule", "del", "fwmark", mark, "lookup", table_name], suppress_errors=True)
             self._run_command(["ip", "-6", "rule", "add", "fwmark", mark, "lookup", table_name, "priority", str(priority)], suppress_errors=True)
         self._run_command(["ip", "route", "flush", "cache"])
 
     def delete_ip_rule(self, mark: str, table_name: str) -> None:
-        self._run_command(["ip", "rule", "del", "fwmark", mark, "lookup", table_name], suppress_errors=True)
-        self._run_command(["ip", "-6", "rule", "del", "fwmark", mark, "lookup", table_name], suppress_errors=True)
+        self._delete_lookup_rule(["fwmark", mark], table_name, ipv6=False)
+        self._delete_lookup_rule(["fwmark", mark], table_name, ipv6=True)
 
     def ensure_uid_rule(self, uid: int, table_name: str, priority: int) -> None:
         rules = self._run_command(["ip", "rule", "show"]).stdout
         rule_line = f"uidrange {uid}-{uid} lookup {table_name}"
-        if rule_line not in rules:
+        if not self._has_rule_at_priority(rules, rule_line, priority):
+            self.delete_uid_rule(uid, table_name)
             self._run_command([
                 "ip",
                 "rule",
@@ -235,7 +318,8 @@ class RoutingManager:
         # IPv6 rule
         rules6 = self._run_command(["ip", "-6", "rule", "show"], suppress_errors=True).stdout
         rule_line6 = f"uidrange {uid}-{uid} lookup {table_name}"
-        if rule_line6 not in (rules6 or ""):
+        if not self._has_rule_at_priority(rules6 or "", rule_line6, priority):
+             self._run_command(["ip", "-6", "rule", "del", "uidrange", f"{uid}-{uid}", "lookup", table_name], suppress_errors=True)
              self._run_command([
                 "ip", "-6",
                 "rule",
@@ -259,16 +343,25 @@ class RoutingManager:
             cmd.append("-6")
         rules = self._run_command([*cmd, "rule", "show"], suppress_errors=ipv6).stdout or ""
         selector_text = " ".join(selector)
-        if f"{selector_text} lookup {self.BLOCK_TABLE_NAME}" in rules:
+        rule_line = f"{selector_text} lookup {self.BLOCK_TABLE_NAME}"
+        if self._has_rule_at_priority(rules, rule_line, priority):
             return
+        self._delete_block_rule(selector, ipv6)
         self._run_command(
             [*cmd, "rule", "add", *selector, "lookup", self.BLOCK_TABLE_NAME, "priority", str(priority)],
             suppress_errors=ipv6,
         )
 
+    def _has_rule_at_priority(self, rules: str, rule_line: str, priority: int) -> bool:
+        priority_prefix = f"{priority}:"
+        for line in (rules or "").splitlines():
+            if line.startswith(priority_prefix) and rule_line in line:
+                return True
+        return False
+
     def delete_uid_rule(self, uid: int, table_name: str) -> None:
-        self._run_command(["ip", "rule", "del", "uidrange", f"{uid}-{uid}", "lookup", table_name])
-        self._run_command(["ip", "-6", "rule", "del", "uidrange", f"{uid}-{uid}", "lookup", table_name], suppress_errors=True)
+        self._delete_lookup_rule(["uidrange", f"{uid}-{uid}"], table_name, ipv6=False)
+        self._delete_lookup_rule(["uidrange", f"{uid}-{uid}"], table_name, ipv6=True)
 
     def delete_uid_block_rule(self, uid: int) -> None:
         self._delete_block_rule(["uidrange", f"{uid}-{uid}"], ipv6=False)
@@ -279,10 +372,13 @@ class RoutingManager:
         self._delete_block_rule(["fwmark", mark], ipv6=True)
 
     def _delete_block_rule(self, selector: list[str], ipv6: bool) -> None:
+        self._delete_lookup_rule(selector, self.BLOCK_TABLE_NAME, ipv6=ipv6)
+
+    def _delete_lookup_rule(self, selector: list[str], table_name: str, ipv6: bool) -> None:
         cmd = ["ip"]
         if ipv6:
             cmd.append("-6")
         while True:
-            res = self._run_command([*cmd, "rule", "del", *selector, "lookup", self.BLOCK_TABLE_NAME], suppress_errors=True)
+            res = self._run_command([*cmd, "rule", "del", *selector, "lookup", table_name], suppress_errors=True)
             if res.returncode != 0:
                 break

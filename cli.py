@@ -113,10 +113,10 @@ class LemuxCLI:
             iface_entry = state.get("interfaces", {}).get(iface, {})
             mark = iface_entry.get("mark", "-")
             table = iface_entry.get("table_name", "-")
-            priority = iface_entry.get("table_id")
+            priority = iface_entry.get("priority")
             rule = "-"
             if priority is not None:
-                rule = f"{policy.BASE_PRIORITY + priority}"
+                rule = str(priority)
             print(f"\nApp: {app}")
             print(f"  Binary: {binary}")
             if arguments:
